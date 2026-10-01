@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kalpi Trade Execution Console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161923;
+    --border: #2a2e3a;
+    --text: #e7e9ee;
+    --muted: #9099ab;
+    --accent: #e0a742;
+    --ok: #4caf7d;
+    --fail: #e2756a;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 32px;
+  }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 0.9rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1100px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .panel h2 { font-size: 0.95rem; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .step-num {
+    font-family: var(--mono);
+    color: var(--accent);
+    font-size: 0.85rem;
+  }
+  label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; }
+  input, select, textarea {
+    width: 100%;
+    background: #0d0f14;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+  }
+  textarea { min-height: 170px; resize: vertical; }
+  button {
+    background: var(--accent);
+    color: #1a1304;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 16px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .status-badge {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    display: inline-block;
+  }
+  .status-badge.ok { background: rgba(76,175,125,0.15); color: var(--ok); }
+  .status-badge.fail { background: rgba(226,117,106,0.15); color: var(--fail); }
+  .status-badge.neutral { background: rgba(255,255,255,0.08); color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 10px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.mono, th.mono { font-family: var(--mono); }
+  #log { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; max-height: 160px; overflow-y: auto; }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+  <h1>Kalpi Trade Execution Console</h1>
+  <p class="sub">Connect a broker, submit a target portfolio, execute in one click, and watch the notification land.</p>
+
+  <div class="grid">
+
+    <div class="panel">
+      <h2><span class="step-num">01</span> Identify &amp; connect broker</h2>
+      <label for="userId">User ID</label>
+      <input id="userId" value="demo">
+
+      <label for="broker">Broker</label>
+      <select id="broker">
+        <option value="mock">mock (no credentials needed)</option>
+        <option value="zerodha">zerodha</option>
+        <option value="fyers">fyers</option>
+        <option value="upstox">upstox</option>
+        <option value="angelone">angelone</option>
+        <option value="groww">groww</option>
+      </select>
+
+      <div class="row">
+        <button id="connectBtn">Connect broker</button>
+        <button class="secondary" id="statusBtn">Check connection status</button>
+      </div>
+      <div id="connectResult" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step-num">02</span> Target portfolio</h2>
+      <label for="instructions">Instructions (JSON)</label>
+      <textarea id="instructions">[
+  { "symbol": "INFY", "broker": "mock", "action": "BUY", "quantity": 10 },
+  { "symbol": "TCS", "broker": "mock", "action": "BUY", "quantity": 5 }
+]</textarea>
+      <button id="executeBtn">Execute portfolio</button>
+    </div>
+
+    <div class="panel full">
+      <h2><span class="step-num">03</span> Execution results</h2>
+      <div id="resultSummary" style="margin-bottom:8px; color: var(--muted); font-size: 0.85rem;">No execution yet.</div>
+      <table id="resultsTable" style="display:none;">
+        <thead>
+          <tr><th>Symbol</th><th>Broker</th><th>Action</th><th class="mono">Qty</th><th>Status</th><th>Broker Order ID</th><th>Error</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel full">
+      <h2><span class="step-num">04</span> Notifications</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <button class="secondary" id="refreshNotifBtn">Refresh notifications</button>
+      </div>
+      <div id="notifList" style="color: var(--muted); font-size: 0.85rem;">No notifications yet.</div>
+    </div>
+
+    <div class="panel full">
+      <h2>Request log</h2>
+      <div id="log"></div>
+    </div>
+
+  </div>
+
+<script>
+  const log = (msg) => {
+    const el = document.getElementById('log');
+    el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + el.textContent;
+  };
+
+  const userId = () => document.getElementById('userId').value.trim();
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, options);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      log(`ERROR ${options.method || 'GET'} ${path} -> ${res.status}: ${JSON.stringify(body)}`);
+      throw new Error(JSON.stringify(body));
+    }
+    log(`${options.method || 'GET'} ${path} -> ${res.status}`);
+    return body;
+  }
+
+  document.getElementById('connectBtn').onclick = async () => {
+    const broker = document.getElementById('broker').value;
+    try {
+      const result = await api(`/auth/${broker}/callback?user_id=${encodeURIComponent(userId())}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      document.getElementById('connectResult').innerHTML =
+        `<span class="status-badge ok">connected: ${result.connected}</span>`;
+    } catch (e) {
+      document.getElementById('connectResult').innerHTML = `<span class="status-badge fail">failed</span>`;
+    }
+  };
+
+  document.getElementById('statusBtn').onclick = async () => {
+    const list = await api(`/brokers?user_id=${encodeURIComponent(userId())}`);
+    document.getElementById('connectResult').innerHTML = list
+      .map(b => `<span class="status-badge ${b.connected ? 'ok' : 'neutral'}">${b.broker}: ${b.connected}</span>`)
+      .join(' ');
+  };
+
+  document.getElementById('executeBtn').onclick = async () => {
+    let instructions;
+    try {
+      instructions = JSON.parse(document.getElementById('instructions').value);
+    } catch (e) {
+      alert('Instructions must be valid JSON');
+      return;
+    }
+    try {
+      const result = await api(`/execute-portfolio?user_id=${encodeURIComponent(userId())}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instructions }),
+      });
+      renderResults(result);
+      await refreshNotifications();
+    } catch (e) {
+      document.getElementById('resultSummary').textContent = 'Execution request failed -- see log below.';
+    }
+  };
+
+  function renderResults(result) {
+    const badgeClass = result.status === 'COMPLETED' ? 'ok' : result.status === 'FAILED' ? 'fail' : 'neutral';
+    document.getElementById('resultSummary').innerHTML =
+      `Batch #${result.batch_id} &mdash; <span class="status-badge ${badgeClass}">${result.status}</span>`;
+
+    const tbody = document.querySelector('#resultsTable tbody');
+    tbody.innerHTML = '';
+    result.results.forEach(r => {
+      const tr = document.createElement('tr');
+      const rowBadge = r.status === 'FAILED' ? 'fail' : 'ok';
+      tr.innerHTML = `
+        <td>${r.symbol}</td>
+        <td>${r.broker}</td>
+        <td class="mono">${r.action}</td>
+        <td class="mono">${r.quantity}</td>
+        <td><span class="status-badge ${rowBadge}">${r.status}</span></td>
+        <td class="mono">${r.broker_order_id || '-'}</td>
+        <td>${r.error_message || '-'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.getElementById('resultsTable').style.display = 'table';
+  }
+
+  async function refreshNotifications() {
+    const notifs = await api(`/notifications?user_id=${encodeURIComponent(userId())}`);
+    const container = document.getElementById('notifList');
+    if (!notifs.length) {
+      container.textContent = 'No notifications yet.';
+      return;
+    }
+    container.innerHTML = notifs.map(n => `
+      <div style="margin-bottom:10px; padding:8px 10px; border:1px solid var(--border); border-radius:6px;">
+        <div><strong>Batch #${n.batch_id}</strong> via <span class="mono">${n.channel}</span>
+          &mdash; <span class="status-badge ${n.delivered ? 'ok' : 'fail'}">${n.delivered ? 'delivered' : 'delivery failed'}</span></div>
+        <div style="color:var(--muted); font-size:0.8rem;">${n.summary.succeeded_count}/${n.summary.total_orders} placed &middot; ${new Date(n.created_at).toLocaleString()}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('refreshNotifBtn').onclick = refreshNotifications;
+</script>
+</body>
+</html>
