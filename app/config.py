@@ -22,5 +22,13 @@ class Settings(BaseSettings):
 
     NOTIFICATION_WEBHOOK_URL: str = ""  # if set, batch summaries are also POSTed here
 
+    # Outbound calls to a given broker are throttled to this many per second
+    # (a generic default; a real system would configure one per broker to
+    # match that broker's documented limit, e.g. Zerodha's ~10 req/sec for
+    # order placement).
+    BROKER_RATE_LIMIT_PER_SECOND: float = 5.0
+    BROKER_RETRY_MAX_ATTEMPTS: int = 3
+    BROKER_RETRY_BASE_DELAY_SECONDS: float = 0.3
+
 
 settings = Settings()

@@ -64,9 +64,9 @@ Or skip curl entirely and drive the same flow visually at `http://localhost:8000
 
 ```
 app/
-├── adapters/      # BrokerAdapter interface + one implementation per broker
+├── adapters/      # BrokerAdapter interface, one implementation per broker, + the typed exception hierarchy
 ├── schemas/       # Pydantic request/response models (the HTTP contract)
-├── services/      # business logic: auth, crypto, execution, notifications
+├── services/      # business logic: auth, crypto, execution, notifications, rate limiting, retry
 ├── routers/       # thin FastAPI route handlers — HTTP concerns only
 ├── store/         # in-memory, process-lifetime data store
 └── config.py      # environment-driven settings
@@ -220,6 +220,55 @@ limits, holdings bought outside this system entirely) — those rejections are s
 the obviously-invalid case (selling something never bought through this system) before it wastes
 a broker API call.
 
+## Rate limiting & retry
+
+Real brokers enforce strict per-second request limits (Zerodha's is ~10 req/sec for order
+placement) and can fail transiently for reasons that have nothing to do with the order itself. A
+trading system that treats every failure the same — give up immediately, or blindly retry
+everything — is wrong in both directions: retrying a rate limit wastes the attempt only to hit the
+same wall; *not* retrying a transient blip throws away a perfectly good order; and retrying a
+permanently-rejected order (bad symbol, insufficient margin) just wastes calls and risks a
+duplicate submission once the broker's underlying issue is fixed by a human.
+
+**A typed exception hierarchy makes the distinction explicit** (`app/adapters/exceptions.py`):
+
+| Exception | Meaning | Retried? |
+|---|---|---|
+| `BrokerRateLimitError` | Broker said "too many requests" | Yes |
+| `BrokerConnectionError` | Transient network/OMS failure | Yes |
+| `BrokerAuthError` | Session/token invalid or expired | No — needs a fresh login |
+| `BrokerOrderRejectedError` | Broker permanently rejected the order | No — retrying won't help |
+
+Every adapter is expected to raise from this hierarchy rather than let raw SDK/HTTP exceptions
+leak out, so the engine's retry policy works identically regardless of which broker is behind it.
+`ZerodhaAdapter` (`app/adapters/zerodha.py`) demonstrates the real mapping: every `kiteconnect`
+exception carries a `.code` (the actual HTTP status Kite's API responded with), which is the
+reliable signal — `429` → rate limit, `502`/`503` → connection error, `403` → auth error, anything
+else → a permanent rejection. A bare `requests` exception (timeout, DNS failure, below Kite's own
+error handling) also maps to `BrokerConnectionError`.
+
+**Two complementary mechanisms sit in `ExecutionEngine` around every `place_order` call:**
+
+1. **Proactive throttling** (`app/services/rate_limiter.py`) — a token-bucket rate limiter, one
+   bucket per broker name, so heavy traffic to Zerodha never throttles Upstox. It's a process-wide
+   singleton (`default_rate_limiter`) because the throttling only means something if it persists
+   across requests, not just within one `ExecutionEngine` instance (which is created fresh per
+   request). Configurable via `BROKER_RATE_LIMIT_PER_SECOND` in `.env`.
+2. **Reactive retry with exponential backoff** (`app/services/retry.py`) — `call_with_retry` wraps
+   the throttled call; on `BrokerRateLimitError`/`BrokerConnectionError` it retries up to
+   `BROKER_RETRY_MAX_ATTEMPTS` times with delay `BROKER_RETRY_BASE_DELAY_SECONDS * 2**attempt`.
+   Any other `BrokerError` propagates immediately — no retry — and is caught by the engine and
+   recorded as that order's `FAILED` reason (e.g. `"BrokerOrderRejectedError: insufficient margin"`),
+   fully isolated from every other order in the batch.
+
+This was verified live, not just in unit tests: firing 12 orders in a single batch against the
+default 5 req/sec limit took **1.42 seconds** — exactly the `(12 - 5) / 5 = 1.4s` the token bucket
+predicts — proving the throttle is actually active on the request path, not just exercised in
+isolation. `tests/test_rate_limiter.py`, `tests/test_retry.py`, and `tests/test_zerodha_exceptions.py`
+cover the pieces individually with injectable fake clocks (no real sleeping in the test suite);
+`tests/test_execution.py` covers the full integration — retry-then-succeed, exhausted retries, and
+no-retry-on-permanent-rejection, all through the real `ExecutionEngine`.
+
 ## Notification system
 
 `app/services/notification_service.py` runs once a batch finishes executing. It:
@@ -267,9 +316,12 @@ Adapter Pattern design itself, not to wrap an existing abstraction over it.
 ## What's explicitly out of scope
 
 - Real-money safety limits/kill-switches on order placement.
-- Broker API rate-limit/backoff handling (each broker enforces strict per-second limits in
-  production; the current loop in `ExecutionEngine` is sequential and unthrottled).
-- Automatic retry workers for orders stuck in `SUBMITTED`.
+- A per-broker-specific rate limit (the single `BROKER_RATE_LIMIT_PER_SECOND` default applies to
+  every broker uniformly — see "Rate limiting & retry" above for the mechanism itself, which *is*
+  implemented; a real system would configure one limit per broker matching its documented value).
+- Automatic retry workers for orders stuck in `SUBMITTED` after the request itself has returned
+  (in-request retries on rate-limit/connection errors are implemented; a background reconciliation
+  job for orders that never got a terminal status is not).
 - Full application-level user authentication (login/JWT/sessions) — `user_id` is passed directly
   via query parameter for this assignment's scope; a real product would add this layer in front.
 - Live wiring of Fyers/AngelOne/Groww/Upstox against real endpoints — these run in demo mode

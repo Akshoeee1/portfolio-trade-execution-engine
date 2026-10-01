@@ -1,13 +1,29 @@
 from unittest.mock import patch
 
+from app.adapters.exceptions import BrokerOrderRejectedError, BrokerRateLimitError
 from app.schemas.trade import TradeAction, TradeInstruction
 from app.services import auth_service
 from app.services.execution_service import ExecutionEngine
+from app.services.rate_limiter import TokenBucketRateLimiter
 from app.store.memory_store import InMemoryStore
 
 
 def _connect_mock_broker(store: InMemoryStore, user_id: str, broker: str = "mock"):
     auth_service.complete_login(store, user_id, broker)
+
+
+def _fast_engine(store: InMemoryStore, **overrides) -> ExecutionEngine:
+    """An ExecutionEngine configured for deterministic, instant tests: a
+    high-capacity rate limiter and a recording sleep_fn instead of real
+    delays."""
+    defaults = dict(
+        rate_limiter=TokenBucketRateLimiter(1000),
+        max_attempts=3,
+        base_delay=0.01,
+        sleep_fn=lambda _: None,
+    )
+    defaults.update(overrides)
+    return ExecutionEngine(store, **defaults)
 
 
 def test_execute_all_buy_first_time_portfolio(store: InMemoryStore):
@@ -134,3 +150,71 @@ def test_no_broker_connection_marks_orders_failed(store: InMemoryStore):
     orders = store.get_orders_for_batch(batch.id)
     assert orders[0].status == "FAILED"
     assert "Authenticate first" in orders[0].error_message
+
+
+def test_rate_limit_error_is_retried_and_eventually_succeeds(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    instructions = [TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.BUY, quantity=10)]
+
+    from app.adapters.mock import MockAdapter
+
+    original_place_order = MockAdapter.place_order
+    call_count = {"n": 0}
+
+    def rate_limited_twice(self, order, session):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise BrokerRateLimitError("simulated 429")
+        return original_place_order(self, order, session)
+
+    with patch.object(MockAdapter, "place_order", rate_limited_twice):
+        batch = _fast_engine(store).execute("user1", instructions)
+
+    assert call_count["n"] == 3  # failed twice, succeeded on the 3rd attempt
+    assert batch.status == "COMPLETED"
+    order = store.get_orders_for_batch(batch.id)[0]
+    assert order.status == "PLACED"
+    assert store.get_position("user1", "mock", "INFY") == 10  # position only updated on the eventual success
+
+
+def test_rate_limit_error_fails_after_exhausting_retries(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    instructions = [TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.BUY, quantity=10)]
+
+    from app.adapters.mock import MockAdapter
+
+    call_count = {"n": 0}
+
+    def always_rate_limited(self, order, session):
+        call_count["n"] += 1
+        raise BrokerRateLimitError("simulated 429, every time")
+
+    with patch.object(MockAdapter, "place_order", always_rate_limited):
+        batch = _fast_engine(store, max_attempts=3).execute("user1", instructions)
+
+    assert call_count["n"] == 3  # exactly max_attempts, then gives up
+    assert batch.status == "FAILED"
+    order = store.get_orders_for_batch(batch.id)[0]
+    assert "BrokerRateLimitError" in order.error_message
+    assert store.get_position("user1", "mock", "INFY") == 0  # never credited -- it never actually placed
+
+
+def test_permanent_rejection_is_not_retried(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    instructions = [TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.BUY, quantity=10)]
+
+    from app.adapters.mock import MockAdapter
+
+    call_count = {"n": 0}
+
+    def always_rejected(self, order, session):
+        call_count["n"] += 1
+        raise BrokerOrderRejectedError("invalid trading symbol")
+
+    with patch.object(MockAdapter, "place_order", always_rejected):
+        batch = _fast_engine(store, max_attempts=5).execute("user1", instructions)
+
+    assert call_count["n"] == 1  # a permanent rejection is never retried, even with attempts to spare
+    assert batch.status == "FAILED"
+    order = store.get_orders_for_batch(batch.id)[0]
+    assert "BrokerOrderRejectedError" in order.error_message

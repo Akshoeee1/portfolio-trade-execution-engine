@@ -1,10 +1,34 @@
 from typing import Any
 from uuid import uuid4
 
+import requests
 from kiteconnect import KiteConnect
+from kiteconnect.exceptions import KiteException
 
 from app.adapters.base import AuthSession, BrokerAdapter, BrokerOrder, BrokerOrderResult, OrderAction
+from app.adapters.exceptions import BrokerAuthError, BrokerConnectionError, BrokerError, BrokerOrderRejectedError, BrokerRateLimitError
 from app.config import settings
+
+
+def _translate_kite_exception(e: Exception) -> BrokerError:
+    """
+    Every KiteException carries a `.code` (the HTTP status Kite's API
+    responded with) -- that's the real signal for whether this is worth
+    retrying. Plain `requests` exceptions (timeouts, DNS failures) happen
+    below Kite's own error handling and are always transient.
+    """
+    if isinstance(e, KiteException):
+        code = getattr(e, "code", 500)
+        if code == 429:
+            return BrokerRateLimitError(str(e))
+        if code in (502, 503):  # DataException / NetworkException -- OMS/network trouble
+            return BrokerConnectionError(str(e))
+        if code == 403:  # TokenException / PermissionException
+            return BrokerAuthError(str(e))
+        return BrokerOrderRejectedError(str(e))  # InputException / OrderException / GeneralException
+    if isinstance(e, requests.exceptions.RequestException):
+        return BrokerConnectionError(str(e))
+    return BrokerError(str(e))
 
 
 class ZerodhaAdapter(BrokerAdapter):
@@ -60,8 +84,8 @@ class ZerodhaAdapter(BrokerAdapter):
                 order_type=order.order_type,
             )
             return BrokerOrderResult(broker_order_id=order_id, status="PLACED", raw_response={"order_id": order_id})
-        except Exception as e:  # noqa: BLE001 - broker SDK raises various exception types
-            return BrokerOrderResult(broker_order_id=None, status="FAILED", raw_response={}, error_message=str(e)[:500])
+        except Exception as e:  # noqa: BLE001 - translated below into our own typed hierarchy
+            raise _translate_kite_exception(e) from e
 
     def get_order_status(self, broker_order_id: str, session: AuthSession) -> BrokerOrderResult:
         if self.demo_mode:
