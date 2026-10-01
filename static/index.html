@@ -69,6 +69,25 @@
     border: 1px solid var(--border);
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
+  label.file-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 16px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    margin: 0;
+  }
+  label.file-upload-btn:hover { border-color: var(--accent); }
+  #builderTable td { padding: 6px 6px; vertical-align: middle; }
+  #builderTable th { white-space: nowrap; }
+  #builderTable input, #builderTable select { margin: 0; padding: 6px 8px; font-size: 0.8rem; }
+  #builderTable select.f-direction:disabled { opacity: 0.3; }
+  .f-remove { padding: 5px 11px !important; font-size: 0.95rem; line-height: 1; color: var(--fail); }
   .row { display: flex; gap: 10px; flex-wrap: wrap; }
   .status-badge {
     font-family: var(--mono);
@@ -128,12 +147,29 @@
 
     <div class="panel">
       <h2><span class="step-num">02</span> Target portfolio</h2>
-      <label for="instructions">Instructions (JSON)</label>
-      <textarea id="instructions">[
-  { "symbol": "INFY", "broker": "mock", "action": "BUY", "quantity": 10 },
-  { "symbol": "TCS", "broker": "mock", "action": "BUY", "quantity": 5 }
-]</textarea>
-      <button id="executeBtn">Execute portfolio</button>
+
+      <div class="row" style="margin-bottom:14px;">
+        <label class="file-upload-btn" for="fileUpload">Upload portfolio JSON</label>
+        <input type="file" id="fileUpload" accept="application/json,.json" style="display:none;">
+        <button class="secondary" id="toggleModeBtn" type="button">View raw JSON</button>
+      </div>
+
+      <div id="builderMode">
+        <table id="builderTable">
+          <thead>
+            <tr><th>Symbol</th><th>Broker</th><th>Action</th><th class="mono">Qty</th><th>Direction</th><th></th></tr>
+          </thead>
+          <tbody id="builderRows"></tbody>
+        </table>
+        <button class="secondary" id="addRowBtn" type="button" style="margin-top:12px;">+ Add stock</button>
+      </div>
+
+      <div id="rawMode" style="display:none;">
+        <label for="instructions">Instructions (JSON)</label>
+        <textarea id="instructions"></textarea>
+      </div>
+
+      <button id="executeBtn" style="margin-top:16px;">Execute portfolio</button>
     </div>
 
     <div class="panel full">
@@ -259,6 +295,146 @@
       .map(b => `<span class="status-badge ${b.connected ? 'ok' : 'neutral'}">${b.broker}: ${b.connected}</span>`)
       .join(' ');
   };
+
+  // ---------- Portfolio builder (easy, per-stock rows) ----------
+  const BUILDER_BROKERS = ['mock', 'zerodha', 'fyers', 'upstox', 'angelone', 'groww'];
+  let rawModeActive = false;
+
+  function createRow(data = {}) {
+    const symbol = data.symbol || '';
+    const broker = BUILDER_BROKERS.includes(data.broker) ? data.broker : 'mock';
+    const action = ['BUY', 'SELL', 'REBALANCE'].includes(data.action) ? data.action : 'BUY';
+    const quantity = data.quantity ?? 1;
+    const direction = data.rebalance_direction === -1 ? '-1' : '1';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input class="f-symbol" value="${symbol}" placeholder="e.g. INFY"></td>
+      <td>
+        <select class="f-broker">
+          ${BUILDER_BROKERS.map(b => `<option value="${b}" ${b === broker ? 'selected' : ''}>${b}</option>`).join('')}
+        </select>
+      </td>
+      <td>
+        <select class="f-action">
+          <option value="BUY" ${action === 'BUY' ? 'selected' : ''}>BUY</option>
+          <option value="SELL" ${action === 'SELL' ? 'selected' : ''}>SELL</option>
+          <option value="REBALANCE" ${action === 'REBALANCE' ? 'selected' : ''}>REBALANCE</option>
+        </select>
+      </td>
+      <td><input class="f-quantity mono" type="number" min="1" value="${quantity}"></td>
+      <td>
+        <select class="f-direction" ${action === 'REBALANCE' ? '' : 'disabled'}>
+          <option value="1" ${direction === '1' ? 'selected' : ''}>+ increase</option>
+          <option value="-1" ${direction === '-1' ? 'selected' : ''}>- reduce</option>
+        </select>
+      </td>
+      <td><button class="secondary f-remove" type="button" title="Remove">&times;</button></td>
+    `;
+    return tr;
+  }
+
+  function renderRows(list) {
+    const tbody = document.getElementById('builderRows');
+    tbody.innerHTML = '';
+    (list && list.length ? list : [{}]).forEach(item => tbody.appendChild(createRow(item)));
+    syncTextareaFromRows();
+  }
+
+  function rowsToInstructions() {
+    return Array.from(document.querySelectorAll('#builderRows tr'))
+      .map(tr => {
+        const symbol = tr.querySelector('.f-symbol').value.trim();
+        if (!symbol) return null;
+        const broker = tr.querySelector('.f-broker').value;
+        const action = tr.querySelector('.f-action').value;
+        const quantity = parseInt(tr.querySelector('.f-quantity').value, 10) || 0;
+        const instr = { symbol, broker, action, quantity };
+        if (action === 'REBALANCE') {
+          instr.rebalance_direction = parseInt(tr.querySelector('.f-direction').value, 10);
+        }
+        return instr;
+      })
+      .filter(Boolean);
+  }
+
+  function syncTextareaFromRows() {
+    document.getElementById('instructions').value = JSON.stringify(rowsToInstructions(), null, 2);
+  }
+
+  function parsePortfolioJson(text) {
+    const data = JSON.parse(text);
+    const list = Array.isArray(data) ? data : data.instructions;
+    if (!Array.isArray(list)) throw new Error('expected a JSON array, or { "instructions": [...] }');
+    return list;
+  }
+
+  document.getElementById('builderRows').addEventListener('input', syncTextareaFromRows);
+  document.getElementById('builderRows').addEventListener('change', (e) => {
+    if (e.target.classList.contains('f-action')) {
+      e.target.closest('tr').querySelector('.f-direction').disabled = e.target.value !== 'REBALANCE';
+    }
+    syncTextareaFromRows();
+  });
+  document.getElementById('builderRows').addEventListener('click', (e) => {
+    if (e.target.classList.contains('f-remove')) {
+      e.target.closest('tr').remove();
+      syncTextareaFromRows();
+    }
+  });
+  document.getElementById('addRowBtn').onclick = () => {
+    document.getElementById('builderRows').appendChild(createRow({}));
+    syncTextareaFromRows();
+  };
+
+  // Seed with a couple of sample rows so the builder isn't empty on first load.
+  renderRows([
+    { symbol: 'INFY', broker: 'mock', action: 'BUY', quantity: 10 },
+    { symbol: 'TCS', broker: 'mock', action: 'BUY', quantity: 5 },
+  ]);
+
+  // ---------- Raw JSON <-> builder toggle ----------
+  document.getElementById('toggleModeBtn').onclick = () => {
+    if (!rawModeActive) {
+      syncTextareaFromRows();
+      document.getElementById('builderMode').style.display = 'none';
+      document.getElementById('rawMode').style.display = 'block';
+      document.getElementById('toggleModeBtn').textContent = 'Back to builder';
+      rawModeActive = true;
+    } else {
+      let parsed;
+      try {
+        parsed = parsePortfolioJson(document.getElementById('instructions').value);
+      } catch (e) {
+        alert('Could not parse JSON back into the builder: ' + e.message);
+        return;
+      }
+      renderRows(parsed);
+      document.getElementById('builderMode').style.display = 'block';
+      document.getElementById('rawMode').style.display = 'none';
+      document.getElementById('toggleModeBtn').textContent = 'View raw JSON';
+      rawModeActive = false;
+    }
+  };
+
+  // ---------- Upload a portfolio from a .json file ----------
+  document.getElementById('fileUpload').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = parsePortfolioJson(reader.result);
+        renderRows(parsed);
+        if (rawModeActive) document.getElementById('toggleModeBtn').click();
+        log(`Loaded ${parsed.length} instruction(s) from ${file.name}`);
+      } catch (err) {
+        alert('Could not read portfolio file: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
 
   document.getElementById('executeBtn').onclick = async () => {
     let instructions;

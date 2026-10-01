@@ -336,6 +336,18 @@ Adapter Pattern design itself, not to wrap an existing abstraction over it.
 `http://localhost:8000/ui` — a single static page (plain HTML/JS, no build step, served directly
 by FastAPI's `StaticFiles`) that walks through the whole flow: pick a user + broker, connect
 (opening a real-feeling simulated login popup for redirect-based brokers, or revealing
-client-code/password/TOTP-style fields for credential-based ones — see "Demo mode" above), paste/
-edit a target-portfolio JSON payload, execute, and watch the results table and notification feed
-populate from the same API calls documented above.
+client-code/password/TOTP-style fields for credential-based ones — see "Demo mode" above), build a
+target portfolio, execute, and watch the results table and notification feed populate from the
+same API calls documented above.
+
+The portfolio itself can be built three ways, matching the assignment's "upload target portfolio"
+phrasing literally as well as practically:
+- **Row builder (default)** — one row per stock: Symbol, Broker, Action (`BUY`/`SELL`/`REBALANCE`),
+  Quantity, and a Direction selector that only enables for `REBALANCE` (+ increase / − reduce). No
+  JSON knowledge needed; `+ Add stock` appends a row, `×` removes one.
+- **File upload** — a real `<input type="file">` accepting a `.json` file shaped like either a bare
+  array of instructions or `{ "instructions": [...] }`; uploading replaces the builder's rows with
+  the file's contents.
+- **Raw JSON** — "View raw JSON" reveals the underlying payload directly (kept in sync with the
+  builder in both directions: edit rows and the JSON updates live, or switch back from edited JSON
+  and the rows rebuild from it) for anyone who wants to paste or hand-edit instructions directly.
