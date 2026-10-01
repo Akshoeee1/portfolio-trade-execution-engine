@@ -19,17 +19,18 @@ class GrowwAdapter(BrokerAdapter):
         return None  # credential-based: no redirect, call authenticate() directly
 
     def authenticate(self, *, api_key: str, totp: str, **kwargs: Any) -> AuthSession:
-        return AuthSession(access_token=f"stub-groww-token-{uuid4()}", extra={"stub": True})
+        return AuthSession(access_token=f"demo-groww-token-{uuid4()}", extra={"demo_mode": True})
 
     def place_order(self, order: BrokerOrder, session: AuthSession) -> BrokerOrderResult:
+        order_id = f"GRW{uuid4().int % 10**10:010d}"
         return BrokerOrderResult(
-            broker_order_id=f"STUB-GROWW-{uuid4()}",
-            status="PLACED (stub)",
-            raw_response={"stub": True, "symbol": order.symbol, "quantity": order.quantity},
+            broker_order_id=order_id,
+            status="PLACED",
+            raw_response={"demo_mode": True, "symbol": order.symbol, "quantity": order.quantity},
         )
 
     def get_order_status(self, broker_order_id: str, session: AuthSession) -> BrokerOrderResult:
-        return BrokerOrderResult(broker_order_id=broker_order_id, status="PLACED (stub)", raw_response={"stub": True})
+        return BrokerOrderResult(broker_order_id=broker_order_id, status="EXECUTED", raw_response={"demo_mode": True})
 
     def get_holdings(self, session: AuthSession) -> list[dict[str, Any]]:
         return []

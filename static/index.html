@@ -110,6 +110,15 @@
         <option value="groww">groww</option>
       </select>
 
+      <div id="credentialFields" style="display:none;">
+        <label id="credLabel1">Client Code</label>
+        <input id="cred1" placeholder="any value works in demo mode">
+        <label id="credLabel2">Password</label>
+        <input id="cred2" type="password" placeholder="any value works in demo mode">
+        <label id="credLabel3">TOTP</label>
+        <input id="cred3" placeholder="any 6 digits">
+      </div>
+
       <div class="row">
         <button id="connectBtn">Connect broker</button>
         <button class="secondary" id="statusBtn">Check connection status</button>
@@ -172,16 +181,73 @@
     return body;
   }
 
+  const CREDENTIAL_BROKERS = {
+    angelone: { labels: ['Client Code', 'Password', 'TOTP'], body: (v) => ({ client_code: v[0], password: v[1], totp: v[2] }) },
+    groww: { labels: ['API Key', 'TOTP', ''], body: (v) => ({ api_key: v[0], totp: v[1] }) },
+  };
+
+  function updateBrokerFieldsVisibility() {
+    const broker = document.getElementById('broker').value;
+    const cfg = CREDENTIAL_BROKERS[broker];
+    const fields = document.getElementById('credentialFields');
+    if (!cfg) {
+      fields.style.display = 'none';
+      return;
+    }
+    fields.style.display = 'block';
+    ['credLabel1', 'credLabel2', 'credLabel3'].forEach((id, i) => {
+      const label = cfg.labels[i] || '';
+      document.getElementById(id).style.display = label ? 'block' : 'none';
+      document.getElementById(id).textContent = label;
+    });
+    document.getElementById('cred3').style.display = cfg.labels[2] ? 'block' : 'none';
+  }
+  document.getElementById('broker').addEventListener('change', updateBrokerFieldsVisibility);
+  updateBrokerFieldsVisibility();
+
   document.getElementById('connectBtn').onclick = async () => {
     const broker = document.getElementById('broker').value;
+    const cfg = CREDENTIAL_BROKERS[broker];
+
     try {
-      const result = await api(`/auth/${broker}/callback?user_id=${encodeURIComponent(userId())}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+      if (cfg) {
+        // Credential-based broker (AngelOne, Groww): no redirect, submit credentials directly.
+        const values = [document.getElementById('cred1').value, document.getElementById('cred2').value, document.getElementById('cred3').value];
+        const result = await api(`/auth/${broker}/callback?user_id=${encodeURIComponent(userId())}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cfg.body(values)),
+        });
+        document.getElementById('connectResult').innerHTML =
+          `<span class="status-badge ok">connected: ${result.connected}</span>`;
+        return;
+      }
+
+      // Redirect-based broker (mock, zerodha, fyers, upstox): fetch a login URL first.
+      const { login_url } = await api(`/auth/${broker}/login-url?user_id=${encodeURIComponent(userId())}`);
+
+      if (login_url === null) {
+        // Shouldn't happen for brokers not in CREDENTIAL_BROKERS, but handle gracefully.
+        document.getElementById('connectResult').innerHTML = `<span class="status-badge fail">no login flow for ${broker}</span>`;
+        return;
+      }
+
+      if (broker === 'mock') {
+        // Mock has no real redirect UX -- just complete the callback directly.
+        const result = await api(`/auth/mock/callback?user_id=${encodeURIComponent(userId())}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        document.getElementById('connectResult').innerHTML =
+          `<span class="status-badge ok">connected: ${result.connected}</span>`;
+        return;
+      }
+
+      // Open the (simulated, if no API key configured) broker login page.
       document.getElementById('connectResult').innerHTML =
-        `<span class="status-badge ok">connected: ${result.connected}</span>`;
+        `<span class="status-badge neutral">opening ${broker} login...</span>`;
+      window.open(login_url, '_blank');
     } catch (e) {
       document.getElementById('connectResult').innerHTML = `<span class="status-badge fail">failed</span>`;
     }
@@ -256,6 +322,21 @@
   }
 
   document.getElementById('refreshNotifBtn').onclick = refreshNotifications;
+
+  // If we just got redirected back from a simulated broker login page
+  // (see app/services/simulated_login.py), the connection already succeeded
+  // server-side before the redirect -- just reflect that here.
+  (function checkReturnFromSimulatedLogin() {
+    const params = new URLSearchParams(window.location.search);
+    const connectedBroker = params.get('connected');
+    if (connectedBroker) {
+      document.getElementById('broker').value = connectedBroker;
+      updateBrokerFieldsVisibility();
+      document.getElementById('connectResult').innerHTML =
+        `<span class="status-badge ok">connected: true (${connectedBroker})</span>`;
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  })();
 </script>
 </body>
 </html>

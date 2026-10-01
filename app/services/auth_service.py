@@ -20,9 +20,9 @@ def load_session(store: InMemoryStore, user_id: str, broker: str) -> AuthSession
     )
 
 
-def get_login_url(broker: str) -> str | None:
+def get_login_url(broker: str, user_id: str) -> str | None:
     adapter = get_adapter(broker)
-    return adapter.get_login_url()
+    return adapter.get_login_url(user_id=user_id)
 
 
 def complete_login(store: InMemoryStore, user_id: str, broker: str, **auth_kwargs) -> BrokerConnection:

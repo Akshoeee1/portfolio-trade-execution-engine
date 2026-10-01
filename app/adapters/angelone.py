@@ -23,20 +23,21 @@ class AngelOneAdapter(BrokerAdapter):
 
     def authenticate(self, *, client_code: str, password: str, totp: str, **kwargs: Any) -> AuthSession:
         return AuthSession(
-            access_token=f"stub-angelone-jwt-{uuid4()}",
-            refresh_token=f"stub-angelone-refresh-{uuid4()}",
-            extra={"stub": True, "client_code": client_code},
+            access_token=f"demo-angelone-jwt-{uuid4()}",
+            refresh_token=f"demo-angelone-refresh-{uuid4()}",
+            extra={"demo_mode": True, "client_code": client_code},
         )
 
     def place_order(self, order: BrokerOrder, session: AuthSession) -> BrokerOrderResult:
+        order_id = f"{uuid4().int % 10**9:09d}"
         return BrokerOrderResult(
-            broker_order_id=f"STUB-ANGELONE-{uuid4()}",
-            status="PLACED (stub)",
-            raw_response={"stub": True, "symbol": order.symbol, "quantity": order.quantity},
+            broker_order_id=order_id,
+            status="PLACED",
+            raw_response={"demo_mode": True, "symbol": order.symbol, "quantity": order.quantity},
         )
 
     def get_order_status(self, broker_order_id: str, session: AuthSession) -> BrokerOrderResult:
-        return BrokerOrderResult(broker_order_id=broker_order_id, status="PLACED (stub)", raw_response={"stub": True})
+        return BrokerOrderResult(broker_order_id=broker_order_id, status="COMPLETE", raw_response={"demo_mode": True})
 
     def get_holdings(self, session: AuthSession) -> list[dict[str, Any]]:
         return []
