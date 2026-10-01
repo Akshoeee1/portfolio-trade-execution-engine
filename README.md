@@ -84,18 +84,18 @@ nothing in the routers, services, or schemas changes. This is deliberately a sin
 `authenticate(**kwargs)` entrypoint rather than two separate interfaces for "redirect" vs
 "credential" brokers, so callers never branch on broker type:
 
-| Broker | Auth shape | Status |
-|---|---|---|
-| Zerodha | OAuth-style redirect, `request_token → access_token` | **Real** — uses the official `kiteconnect` SDK |
-| Fyers | OAuth2 authcode redirect | Stub — same shape, no live network call |
-| Upstox | OAuth2 authcode redirect | Stub — same shape, no live network call |
-| AngelOne | Credential + TOTP, no redirect (`get_login_url()` returns `None`) | Stub — same shape, no live network call |
-| Groww | Credential + TOTP (assumed shape — public API is newer/less documented) | Stub — same shape, no live network call |
-| Mock | No-op, no network | **Real** — used for tests and the demo frontend |
+| Broker | Auth shape | Without API keys | With API keys |
+|---|---|---|---|
+| Zerodha | OAuth-style redirect, `request_token → access_token` | Demo mode (see below) | **Real** — uses the official `kiteconnect` SDK |
+| Fyers | OAuth2 authcode redirect | Demo mode | Same shape, real call not wired (no official SDK dependency pulled in) |
+| Upstox | OAuth2 authcode redirect | Demo mode | Same shape, real call not wired |
+| AngelOne | Credential + TOTP, no redirect (`get_login_url()` returns `None`) | Demo mode | Same shape, real call not wired |
+| Groww | Credential + TOTP (assumed shape — public API is newer/less documented) | Demo mode | Same shape, real call not wired |
+| Mock | No-op, no network | Always demo | n/a |
 
-Only Zerodha and Mock are wired to real behavior; the other four prove the adapter pattern
-generalizes across both auth shapes without needing live broker accounts to grade this
-assignment. Each stub's docstring documents the broker's actual real-world auth flow.
+Every adapter implements the same five-method interface regardless of which column applies, which
+is what proves the Adapter Pattern generalizes across both auth shapes without needing five live
+broker accounts to grade this assignment.
 
 **In-memory store, no database.** `app/store/memory_store.py` is a thread-safe, dict-backed store
 for broker connections, orders, and notifications, held on `app.state` for the life of the running
@@ -107,6 +107,38 @@ it keeps the system runnable with zero infrastructure. The store's interface
 **Security.** Broker tokens are never stored in plaintext — `app/services/crypto_service.py`
 encrypts them with Fernet symmetric encryption before they touch the store, and decrypts only
 in-memory, only when a request needs them. Secrets are never logged.
+
+## Demo mode — connecting without real broker API keys
+
+Every adapter checks at startup whether its real API key/client ID is configured (`settings.*`
+in `app/config.py`, sourced from `.env`). **If it isn't, the adapter runs in demo mode** instead
+of failing — the goal is to let the whole single-click flow be exercised and graded without
+needing five live broker accounts.
+
+- **Redirect-based brokers (Zerodha, Fyers, Upstox):** `get_login_url()` returns a link to a
+  locally-rendered, broker-branded login page (`app/services/simulated_login.py`,
+  served at `GET /auth/{broker}/simulate-login`) instead of that broker's real hosted login. It
+  looks and behaves like the real redirect flow — a styled form, a clear "simulated, no real
+  account contacted" notice, and a submit button — but on submit it mints a fake token locally and
+  calls our own `/auth/{broker}/callback` directly, completing the exact same code path a real
+  OAuth redirect would.
+- **Credential-based brokers (AngelOne, Groww):** no redirect exists for these even in real life.
+  The bonus frontend shows the real input shape each one actually requires (client code + password
+  + TOTP, or API key + TOTP) — any values are accepted in demo mode, since there's no live account
+  to check them against.
+- **Order IDs and statuses are broker-realistic**, not generic placeholders — e.g. Zerodha demo
+  orders get a 16-digit numeric ID, Upstox/Fyers get a broker-prefixed alphanumeric one, matching
+  each broker's real format, so responses read like what that broker would actually send back.
+- **Adding real credentials flips the switch automatically** — only Zerodha has a real
+  implementation behind it (via `kiteconnect`); setting `ZERODHA_API_KEY`/`ZERODHA_API_SECRET` in
+  `.env` makes `ZerodhaAdapter` skip demo mode entirely and place real orders through Kite Connect.
+  The other four brokers' `authenticate`/`place_order` methods are the documented seam where real
+  SDK calls would go in; their `get_login_url()` already returns the real hosted login URL once a
+  client ID is set, even though the exchange itself isn't wired yet.
+
+Try it at `http://localhost:8000/ui`: pick any broker besides `mock`, click **Connect broker**, and
+a real-feeling login experience opens for the redirect-based ones, or credential fields appear
+inline for AngelOne/Groww.
 
 ## How the rebalance logic works
 
@@ -174,7 +206,8 @@ not touching the execution engine.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/auth/{broker}/login-url` | Hosted login URL (redirect brokers) or `null` (credential brokers) |
+| `GET` | `/auth/{broker}/login-url` | Hosted login URL (redirect brokers; a simulated one in demo mode) or `null` (credential brokers) |
+| `GET` | `/auth/{broker}/simulate-login` | The simulated, broker-branded login page (demo mode only) |
 | `POST` | `/auth/{broker}/callback` | Complete authentication, store encrypted tokens |
 | `GET` | `/brokers` | List all 6 brokers + this user's connection status |
 | `GET` | `/brokers/{broker}/holdings` | Current holdings via the broker's adapter |
@@ -205,13 +238,15 @@ Adapter Pattern design itself, not to wrap an existing abstraction over it.
 - Automatic retry workers for orders stuck in `SUBMITTED`.
 - Full application-level user authentication (login/JWT/sessions) — `user_id` is passed directly
   via query parameter for this assignment's scope; a real product would add this layer in front.
-- Live wiring of Fyers/AngelOne/Groww/Upstox against real endpoints — documented, interface-
-  conformant stubs, not live integrations.
+- Live wiring of Fyers/AngelOne/Groww/Upstox against real endpoints — these run in demo mode
+  (see above) and are interface-conformant, but not live integrations.
 - Persistence across restarts (see "in-memory store" above).
 
 ## Bonus: test frontend
 
 `http://localhost:8000/ui` — a single static page (plain HTML/JS, no build step, served directly
-by FastAPI's `StaticFiles`) that walks through the whole flow: pick a user + broker, connect,
-paste/edit a target-portfolio JSON payload, execute, and watch the results table and notification
-feed populate from the same API calls documented above.
+by FastAPI's `StaticFiles`) that walks through the whole flow: pick a user + broker, connect
+(opening a real-feeling simulated login popup for redirect-based brokers, or revealing
+client-code/password/TOTP-style fields for credential-based ones — see "Demo mode" above), paste/
+edit a target-portfolio JSON payload, execute, and watch the results table and notification feed
+populate from the same API calls documented above.
