@@ -181,11 +181,44 @@ still preserved on the stored `Order` record for the audit trail.
    even a crash mid-batch leaves a complete record of what was attempted.
 3. Group orders by broker (a single request can span multiple brokers) and load/decrypt each
    broker's session once.
-4. Place each order; a failure in one order never rolls back the others — each order's outcome is
-   recorded independently.
-5. Roll the batch up to `COMPLETED` (all placed), `PARTIAL_FAILURE` (some placed), or `FAILED`
+4. For each order whose resolved side is `SELL`, check it against the positions ledger (see
+   below) **before** calling the broker — insufficient holdings fail the order immediately with no
+   network call at all.
+5. Place each remaining order; a failure in one order never rolls back the others — each order's
+   outcome is recorded independently, and the ledger is only updated for orders the broker actually
+   confirmed as `PLACED`.
+6. Roll the batch up to `COMPLETED` (all placed), `PARTIAL_FAILURE` (some placed), or `FAILED`
    (none placed).
-6. Fire a notification summarizing the batch (see below).
+7. Fire a notification summarizing the batch (see below).
+
+## Holdings validation (can't sell what you don't have)
+
+The engine trusts the caller's *intent* (BUY/SELL/REBALANCE), but it does not blindly trust that a
+SELL is actually fulfillable — `app/store/memory_store.py` keeps a net-position ledger per
+`(user_id, broker, symbol)`, built entirely from orders this system has itself successfully placed
+(no external holdings fetch involved). Before any `SELL` (or a `REBALANCE` that resolves to one)
+reaches an adapter:
+
+```python
+held = self.store.get_position(user_id, row.broker, row.symbol)
+if row.quantity > held:
+    row.status = "FAILED"
+    row.error_message = f"Insufficient holdings for {row.symbol} ...: have {held}, attempted to sell {row.quantity}"
+    continue  # never calls the broker
+```
+
+A successful `PLACED` result then adjusts the ledger (`+quantity` for BUY, `-quantity` for SELL).
+Because orders within one broker are processed in payload order, a `BUY` followed by a `SELL` of
+the same symbol **in the same batch** works correctly — the position is updated after the BUY
+before the SELL is checked. `GET /positions?user_id=...` exposes the ledger directly for
+inspection or for the frontend.
+
+This is deliberately *local, fail-fast* validation, not a replacement for the broker's own checks:
+a real broker can still reject an order for reasons this system can't see (margin calls, circuit
+limits, holdings bought outside this system entirely) — those rejections are still caught in the
+`try/except` around `place_order` and surfaced per-order exactly as before. The ledger just stops
+the obviously-invalid case (selling something never bought through this system) before it wastes
+a broker API call.
 
 ## Notification system
 
@@ -213,6 +246,7 @@ not touching the execution engine.
 | `GET` | `/brokers/{broker}/holdings` | Current holdings via the broker's adapter |
 | `POST` | `/execute-portfolio` | **The single-click endpoint** — execute a list of trade instructions |
 | `GET` | `/notifications` | Notification history for this user |
+| `GET` | `/positions` | This system's own net-position ledger per broker/symbol (not the broker's real holdings) |
 
 Full interactive docs (request/response schemas, try-it-out) at `/docs`.
 
@@ -241,6 +275,9 @@ Adapter Pattern design itself, not to wrap an existing abstraction over it.
 - Live wiring of Fyers/AngelOne/Groww/Upstox against real endpoints — these run in demo mode
   (see above) and are interface-conformant, but not live integrations.
 - Persistence across restarts (see "in-memory store" above).
+- Reconciling the positions ledger against a broker's *real* holdings (pre-existing positions the
+  user had before ever touching this system aren't known to it — see "Holdings validation" above;
+  the ledger only reflects orders placed through this engine).
 
 ## Bonus: test frontend
 

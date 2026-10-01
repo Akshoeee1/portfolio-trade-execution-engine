@@ -28,6 +28,12 @@ def test_execute_all_buy_first_time_portfolio(store: InMemoryStore):
 
 def test_execute_mixed_buy_sell_rebalance(store: InMemoryStore):
     _connect_mock_broker(store, "user1")
+    # Seed existing holdings so the SELL/REBALANCE-down lines below have
+    # something to reduce -- matches real life: you can't sell what you
+    # haven't bought.
+    store.adjust_position("user1", "mock", "INFY", 3)
+    store.adjust_position("user1", "mock", "TCS", 4)
+
     instructions = [
         TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.SELL, quantity=3),
         TradeInstruction(symbol="WIPRO", broker="mock", action=TradeAction.BUY, quantity=8),
@@ -46,6 +52,52 @@ def test_execute_mixed_buy_sell_rebalance(store: InMemoryStore):
     assert orders["WIPRO"].resolved_action == "BUY"
     assert orders["TCS"].resolved_action == "SELL"  # REBALANCE direction -1
     assert orders["HDFC"].resolved_action == "BUY"  # REBALANCE direction +1
+
+    # Positions reflect the net effect: INFY and TCS fully sold off, WIPRO
+    # and HDFC newly bought.
+    assert store.get_position("user1", "mock", "INFY") == 0
+    assert store.get_position("user1", "mock", "TCS") == 0
+    assert store.get_position("user1", "mock", "WIPRO") == 8
+    assert store.get_position("user1", "mock", "HDFC") == 2
+
+
+def test_sell_more_than_held_fails_without_calling_broker(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    instructions = [TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.SELL, quantity=5)]
+
+    batch = ExecutionEngine(store).execute("user1", instructions)
+
+    assert batch.status == "FAILED"
+    order = store.get_orders_for_batch(batch.id)[0]
+    assert order.status == "FAILED"
+    assert "Insufficient holdings" in order.error_message
+    assert order.broker_order_id is None
+    # Position must be untouched -- the broker was never actually called.
+    assert store.get_position("user1", "mock", "INFY") == 0
+
+
+def test_buy_then_sell_in_same_batch_succeeds(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    instructions = [
+        TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.BUY, quantity=10),
+        TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.SELL, quantity=10),
+    ]
+
+    batch = ExecutionEngine(store).execute("user1", instructions)
+
+    assert batch.status == "COMPLETED"
+    assert store.get_position("user1", "mock", "INFY") == 0
+
+
+def test_partial_sell_leaves_remaining_position(store: InMemoryStore):
+    _connect_mock_broker(store, "user1")
+    store.adjust_position("user1", "mock", "INFY", 10)
+
+    instructions = [TradeInstruction(symbol="INFY", broker="mock", action=TradeAction.SELL, quantity=4)]
+    batch = ExecutionEngine(store).execute("user1", instructions)
+
+    assert batch.status == "COMPLETED"
+    assert store.get_position("user1", "mock", "INFY") == 6
 
 
 def test_partial_failure_when_one_broker_call_raises(store: InMemoryStore):

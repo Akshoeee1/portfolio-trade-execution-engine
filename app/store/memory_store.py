@@ -24,6 +24,7 @@ class InMemoryStore:
         self.orders: dict[int, Order] = {}
         self.batches: dict[int, ExecutionBatch] = {}
         self.notifications: dict[int, Notification] = {}
+        self.positions: dict[tuple[str, str, str], int] = {}  # (user_id, broker, symbol) -> net qty held
 
     # -- broker connections --------------------------------------------------
 
@@ -106,3 +107,23 @@ class InMemoryStore:
             key=lambda n: n.created_at,
             reverse=True,
         )
+
+    # -- positions (net holdings tracked through orders placed via this system) ---
+
+    def get_position(self, user_id: str, broker: str, symbol: str) -> int:
+        return self.positions.get((user_id, broker, symbol), 0)
+
+    def adjust_position(self, user_id: str, broker: str, symbol: str, delta: int) -> int:
+        with self._lock:
+            key = (user_id, broker, symbol)
+            new_qty = self.positions.get(key, 0) + delta
+            self.positions[key] = new_qty
+            return new_qty
+
+    def list_positions(self, user_id: str) -> dict[str, dict[str, int]]:
+        """Returns { broker: { symbol: quantity } } for all non-zero positions."""
+        result: dict[str, dict[str, int]] = {}
+        for (uid, broker, symbol), qty in self.positions.items():
+            if uid == user_id and qty != 0:
+                result.setdefault(broker, {})[symbol] = qty
+        return result

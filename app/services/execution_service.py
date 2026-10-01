@@ -15,7 +15,15 @@ class ExecutionEngine:
     The engine never computes a holdings-vs-target delta itself -- each
     instruction already carries an explicit action (BUY/SELL/REBALANCE) and
     quantity. `_resolve` only maps that instruction to a concrete BUY/SELL
-    direction; it never reads current holdings.
+    direction; it never reads current holdings to decide *what* to do.
+
+    It does, however, guard against placing a SELL (or a REBALANCE that
+    resolves to one) for more than the user has actually accumulated via
+    this system -- see `store.get_position`/`adjust_position`. That ledger
+    is fail-fast local validation, not a replacement for the broker's own
+    checks: a real broker can still reject an order for reasons we can't
+    see (margin, circuit limits, holdings bought outside this system), and
+    those rejections are still caught and surfaced per-order below.
     """
 
     def __init__(self, store: InMemoryStore):
@@ -58,6 +66,16 @@ class ExecutionEngine:
                 continue
 
             for row in rows:
+                if row.resolved_action == "SELL":
+                    held = self.store.get_position(user_id, row.broker, row.symbol)
+                    if row.quantity > held:
+                        row.status = "FAILED"
+                        row.error_message = (
+                            f"Insufficient holdings for {row.symbol} on {row.broker}: "
+                            f"have {held}, attempted to sell {row.quantity}"
+                        )
+                        continue
+
                 row.status = "SUBMITTED"
                 broker_order = BrokerOrder(
                     symbol=row.symbol,
@@ -71,6 +89,9 @@ class ExecutionEngine:
                     row.broker_order_id = result.broker_order_id
                     row.error_message = result.error_message
                     row.raw_response = result.raw_response
+                    if row.status == "PLACED":
+                        delta = row.quantity if row.resolved_action == "BUY" else -row.quantity
+                        self.store.adjust_position(user_id, row.broker, row.symbol, delta)
                 except Exception as e:  # noqa: BLE001 - broker adapters may raise anything
                     row.status = "FAILED"
                     row.error_message = str(e)[:500]

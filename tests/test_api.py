@@ -12,7 +12,7 @@ def test_execute_portfolio_endpoint(client: TestClient):
         json={
             "instructions": [
                 {"symbol": "INFY", "broker": "mock", "action": "BUY", "quantity": 10},
-                {"symbol": "TCS", "broker": "mock", "action": "SELL", "quantity": 3},
+                {"symbol": "TCS", "broker": "mock", "action": "BUY", "quantity": 5},
             ]
         },
     )
@@ -20,6 +20,32 @@ def test_execute_portfolio_endpoint(client: TestClient):
     body = resp.json()
     assert body["status"] == "COMPLETED"
     assert len(body["results"]) == 2
+
+    # Now sell what was just bought -- exercises the positions ledger through the API.
+    sell_resp = client.post(
+        "/execute-portfolio",
+        params={"user_id": "user1"},
+        json={"instructions": [{"symbol": "TCS", "broker": "mock", "action": "SELL", "quantity": 3}]},
+    )
+    assert sell_resp.status_code == 200
+    assert sell_resp.json()["status"] == "COMPLETED"
+
+    positions = client.get("/positions", params={"user_id": "user1"}).json()["positions"]
+    assert positions["mock"]["INFY"] == 10
+    assert positions["mock"]["TCS"] == 2  # 5 bought, 3 sold
+
+
+def test_sell_without_holdings_fails_via_api(client: TestClient):
+    client.post("/auth/mock/callback", params={"user_id": "user2"}, json={})
+    resp = client.post(
+        "/execute-portfolio",
+        params={"user_id": "user2"},
+        json={"instructions": [{"symbol": "RELIANCE", "broker": "mock", "action": "SELL", "quantity": 1}]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "FAILED"
+    assert "Insufficient holdings" in body["results"][0]["error_message"]
 
 
 def test_login_url_for_redirect_broker(client: TestClient):
